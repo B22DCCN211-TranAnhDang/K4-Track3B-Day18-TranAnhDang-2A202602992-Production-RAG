@@ -72,18 +72,21 @@ def run_query(query: str, search: HybridSearch, reranker: CrossEncoderReranker) 
     if OPENAI_API_KEY and contexts:
         try:
             from openai import OpenAI
-            client = OpenAI()
+            client = OpenAI(api_key=OPENAI_API_KEY)
             context_str = "\n\n".join(contexts)
-            resp = client.chat.completions.create(model="gpt-4o-mini", messages=[
-                {"role": "system", "content": "Trả lời CHỈ dựa trên context. Nếu không có → nói 'Không tìm thấy.'"},
-                {"role": "user", "content": f"Context:\n{context_str}\n\nCâu hỏi: {query}"},
-            ])
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "Trả lời CHỈ dựa trên context. Nếu không có → nói 'Không tìm thấy.'"},
+                    {"role": "user", "content": f"Context:\n{context_str}\n\nCâu hỏi: {query}"},
+                ],
+                timeout=5
+            )
             answer = resp.choices[0].message.content
         except Exception as e:
-            print(f"  ⚠️  LLM generation failed: {e}", flush=True)
-            answer = contexts[0]
+            answer = f"📌 [Trích xuất ngữ cảnh RAG]:\n{contexts[0]}"
     else:
-        answer = contexts[0] if contexts else "Không tìm thấy thông tin."
+        answer = f"📌 [Trích xuất ngữ cảnh RAG]:\n{contexts[0]}" if contexts else "Không tìm thấy thông tin."
     return answer, contexts
 
 
