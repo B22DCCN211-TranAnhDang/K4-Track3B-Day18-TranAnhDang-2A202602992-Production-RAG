@@ -18,6 +18,17 @@ from dataclasses import dataclass, field
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import OPENAI_API_KEY
 
+_OPENAI_DISABLED = False
+
+
+def _check_openai_error(e: Exception):
+    global _OPENAI_DISABLED
+    err_str = str(e)
+    if "insufficient_quota" in err_str or "credit_balance_exhausted" in err_str or "429" in err_str:
+        if not _OPENAI_DISABLED:
+            print(f"  ⚠️  OpenAI API quota exhausted (code 429). Switching all remaining chunks to Extractive Fallback mode.")
+            _OPENAI_DISABLED = True
+
 
 @dataclass
 class EnrichedChunk:
@@ -38,7 +49,8 @@ def summarize_chunk(text: str) -> str:
     Tạo summary ngắn cho chunk.
     Embed summary thay vì (hoặc cùng với) raw chunk → giảm noise.
     """
-    if OPENAI_API_KEY:
+    global _OPENAI_DISABLED
+    if OPENAI_API_KEY and not _OPENAI_DISABLED:
         try:
             from openai import OpenAI
             client = OpenAI(api_key=OPENAI_API_KEY)
@@ -54,7 +66,7 @@ def summarize_chunk(text: str) -> str:
             if content and content.strip():
                 return content.strip()
         except Exception as e:
-            print(f"  ⚠️  OpenAI summarize failed: {e}")
+            _check_openai_error(e)
 
     sentences = [s.strip() for s in text.replace("\n", " ").split(". ") if s.strip()]
     return ". ".join(sentences[:2]) + ("." if sentences and not sentences[0].endswith(".") else "") if sentences else text
@@ -68,7 +80,8 @@ def generate_hypothesis_questions(text: str, n_questions: int = 3) -> list[str]:
     Generate câu hỏi mà chunk có thể trả lời.
     Index cả questions lẫn chunk → query match tốt hơn (bridge vocabulary gap).
     """
-    if OPENAI_API_KEY:
+    global _OPENAI_DISABLED
+    if OPENAI_API_KEY and not _OPENAI_DISABLED:
         try:
             from openai import OpenAI
             client = OpenAI(api_key=OPENAI_API_KEY)
@@ -85,7 +98,7 @@ def generate_hypothesis_questions(text: str, n_questions: int = 3) -> list[str]:
                 questions = content.strip().split("\n")
                 return [q.strip().lstrip("0123456789.-) ") for q in questions if q.strip()][:n_questions]
         except Exception as e:
-            print(f"  ⚠️  OpenAI HyQA failed: {e}")
+            _check_openai_error(e)
 
     import re
     sentences = [s.strip() for s in re.split(r'[.!?\n]', text) if len(s.strip()) > 10]
@@ -100,7 +113,8 @@ def contextual_prepend(text: str, document_title: str = "") -> str:
     Prepend context giải thích chunk nằm ở đâu trong document.
     Anthropic benchmark: giảm 49% retrieval failure (alone).
     """
-    if OPENAI_API_KEY:
+    global _OPENAI_DISABLED
+    if OPENAI_API_KEY and not _OPENAI_DISABLED:
         try:
             from openai import OpenAI
             client = OpenAI(api_key=OPENAI_API_KEY)
@@ -117,7 +131,7 @@ def contextual_prepend(text: str, document_title: str = "") -> str:
                 context = content.strip()
                 return f"{context}\n\n{text}"
         except Exception as e:
-            print(f"  ⚠️  OpenAI contextual failed: {e}")
+            _check_openai_error(e)
 
     prefix = f"Trích từ {document_title}. " if document_title else "Nội dung tài liệu. "
     return f"{prefix}\n\n{text}"
@@ -130,7 +144,8 @@ def extract_metadata(text: str) -> dict:
     """
     LLM extract metadata tự động: topic, entities, date_range, category.
     """
-    if OPENAI_API_KEY:
+    global _OPENAI_DISABLED
+    if OPENAI_API_KEY and not _OPENAI_DISABLED:
         try:
             import json as _json
             from openai import OpenAI
@@ -148,7 +163,7 @@ def extract_metadata(text: str) -> dict:
                 clean_json = content.strip().lstrip("```json").rstrip("```").strip()
                 return _json.loads(clean_json)
         except Exception as e:
-            print(f"  ⚠️  OpenAI metadata failed: {e}")
+            _check_openai_error(e)
 
     return {"topic": "general", "entities": [], "category": "policy", "language": "vi"}
 
@@ -161,7 +176,8 @@ def _enrich_single_call(text: str, source: str) -> dict:
 
     ⚠️ Cost optimization: 1 API call thay vì 4 calls riêng lẻ.
     """
-    if OPENAI_API_KEY:
+    global _OPENAI_DISABLED
+    if OPENAI_API_KEY and not _OPENAI_DISABLED:
         try:
             import json as _json
             from openai import OpenAI
@@ -185,7 +201,7 @@ def _enrich_single_call(text: str, source: str) -> dict:
                 clean_json = content.strip().lstrip("```json").rstrip("```").strip()
                 return _json.loads(clean_json)
         except Exception as e:
-            print(f"  ⚠️  Enrichment API failed: {e}")
+            _check_openai_error(e)
 
     return {
         "summary": summarize_chunk(text),
