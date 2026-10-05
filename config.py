@@ -5,8 +5,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- API Keys ---
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+# --- Groq via its OpenAI-compatible endpoint ---
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+LLM_API_KEY = GROQ_API_KEY
+LLM_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+RAGAS_MODEL = os.getenv("GROQ_RAGAS_MODEL", "qwen/qwen3.8-27b")
+LLM_BASE_URL = os.getenv(
+    "GROQ_BASE_URL",
+    "https://api.groq.com/openai/v1",
+)
+
+
+def create_llm_client():
+    """Create an OpenAI-SDK client that sends requests to Groq."""
+    if not LLM_API_KEY:
+        return None
+    from openai import OpenAI
+
+    return OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
 
 # --- Qdrant ---
 QDRANT_HOST = "localhost"

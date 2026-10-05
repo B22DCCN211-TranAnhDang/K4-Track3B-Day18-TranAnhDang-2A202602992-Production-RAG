@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Module 4: RAGAS Evaluation — 4 metrics + failure analysis."""
 
-import os, sys, json
+import os, sys, json, math
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
@@ -10,7 +10,8 @@ if hasattr(sys.stderr, "reconfigure"):
 from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import TEST_SET_PATH
+from config import (TEST_SET_PATH, EMBEDDING_MODEL, LLM_API_KEY, LLM_BASE_URL,
+                    RAGAS_MODEL)
 
 
 @dataclass
@@ -31,13 +32,57 @@ def load_test_set(path: str = TEST_SET_PATH) -> list[dict]:
         return json.load(f)
 
 
+def _safe_score(value) -> float:
+    """Convert a RAGAS value to a finite score suitable for JSON reports."""
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return score if math.isfinite(score) else 0.0
+
+
 def evaluate_ragas(questions: list[str], answers: list[str],
                    contexts: list[list[str]], ground_truths: list[str]) -> dict:
     """Run RAGAS evaluation."""
+    if not LLM_API_KEY:
+        print("  ⚠️  RAGAS skipped: GROQ_API_KEY is not configured.")
+        per_question = [
+            EvalResult(q, a, c, gt, 0.0, 0.0, 0.0, 0.0)
+            for q, a, c, gt in zip(questions, answers, contexts, ground_truths)
+        ]
+        return {
+            "faithfulness": 0.0,
+            "answer_relevancy": 0.0,
+            "context_precision": 0.0,
+            "context_recall": 0.0,
+            "per_question": per_question,
+        }
+
     try:
         from ragas import evaluate
         from ragas.metrics import faithfulness, answer_relevancy, context_precision, context_recall
+        from ragas.run_config import RunConfig
         from datasets import Dataset
+        from langchain_openai import ChatOpenAI
+        from langchain_community.embeddings import HuggingFaceEmbeddings
+
+        # Groq accepts only n=1, while RAGAS defaults to three generated
+        # questions for answer_relevancy. One sample is sufficient here and
+        # avoids Groq's "'n' must be at most 1" response.
+        answer_relevancy.strictness = 1
+
+        evaluator_llm = ChatOpenAI(
+            api_key=LLM_API_KEY,
+            base_url=LLM_BASE_URL,
+            model=RAGAS_MODEL,
+            temperature=0,
+            max_tokens=512,
+            # A single RAGAS metric may need multiple model calls. Give the
+            # Groq client enough time to honor Retry-After during TPM bursts.
+            timeout=180,
+            max_retries=20,
+        )
+        evaluator_embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
 
         dataset = Dataset.from_dict({
             "question": questions,
@@ -45,8 +90,21 @@ def evaluate_ragas(questions: list[str], answers: list[str],
             "contexts": contexts,
             "ground_truth": ground_truths,
         })
-        result = evaluate(dataset, metrics=[faithfulness, answer_relevancy,
-                                            context_precision, context_recall])
+        result = evaluate(
+            dataset,
+            metrics=[faithfulness, answer_relevancy, context_precision, context_recall],
+            llm=evaluator_llm,
+            embeddings=evaluator_embeddings,
+            # Groq's on-demand tier is token-per-minute limited. Serial jobs
+            # plus retries let the SDK honor Retry-After instead of dropping
+            # concurrent RAGAS jobs and producing NaN scores.
+            run_config=RunConfig(
+                timeout=600,
+                max_retries=20,
+                max_wait=120,
+                max_workers=1,
+            ),
+        )
         df = result.to_pandas()
         per_question = []
         for _, row in df.iterrows():
@@ -55,16 +113,17 @@ def evaluate_ragas(questions: list[str], answers: list[str],
                 answer=str(row["answer"]),
                 contexts=list(row["contexts"]),
                 ground_truth=str(row["ground_truth"]),
-                faithfulness=float(row.get("faithfulness", 0.0) or 0.0),
-                answer_relevancy=float(row.get("answer_relevancy", 0.0) or 0.0),
-                context_precision=float(row.get("context_precision", 0.0) or 0.0),
-                context_recall=float(row.get("context_recall", 0.0) or 0.0),
+                faithfulness=_safe_score(row.get("faithfulness", 0.0)),
+                answer_relevancy=_safe_score(row.get("answer_relevancy", 0.0)),
+                context_precision=_safe_score(row.get("context_precision", 0.0)),
+                context_recall=_safe_score(row.get("context_recall", 0.0)),
             ))
 
-        avg_f = float(df["faithfulness"].mean()) if "faithfulness" in df and not df["faithfulness"].isna().all() else 0.0
-        avg_a = float(df["answer_relevancy"].mean()) if "answer_relevancy" in df and not df["answer_relevancy"].isna().all() else 0.0
-        avg_cp = float(df["context_precision"].mean()) if "context_precision" in df and not df["context_precision"].isna().all() else 0.0
-        avg_cr = float(df["context_recall"].mean()) if "context_recall" in df and not df["context_recall"].isna().all() else 0.0
+        count = max(len(per_question), 1)
+        avg_f = sum(item.faithfulness for item in per_question) / count
+        avg_a = sum(item.answer_relevancy for item in per_question) / count
+        avg_cp = sum(item.context_precision for item in per_question) / count
+        avg_cr = sum(item.context_recall for item in per_question) / count
 
         return {
             "faithfulness": avg_f,

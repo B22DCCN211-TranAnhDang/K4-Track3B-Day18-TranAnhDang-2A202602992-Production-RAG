@@ -16,18 +16,18 @@ if hasattr(sys.stderr, "reconfigure"):
 from dataclasses import dataclass, field
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import OPENAI_API_KEY
+from config import LLM_API_KEY, LLM_MODEL, create_llm_client
 
-_OPENAI_DISABLED = False
+_LLM_DISABLED = False
 
 
-def _check_openai_error(e: Exception):
-    global _OPENAI_DISABLED
+def _check_llm_error(e: Exception):
+    global _LLM_DISABLED
     err_str = str(e)
     if "insufficient_quota" in err_str or "credit_balance_exhausted" in err_str or "429" in err_str:
-        if not _OPENAI_DISABLED:
-            print(f"  ⚠️  OpenAI API quota exhausted (code 429). Switching all remaining chunks to Extractive Fallback mode.")
-            _OPENAI_DISABLED = True
+        if not _LLM_DISABLED:
+            print("  ⚠️  Groq API quota exhausted (code 429). Switching remaining chunks to Extractive Fallback mode.")
+            _LLM_DISABLED = True
 
 
 @dataclass
@@ -49,13 +49,12 @@ def summarize_chunk(text: str) -> str:
     Tạo summary ngắn cho chunk.
     Embed summary thay vì (hoặc cùng với) raw chunk → giảm noise.
     """
-    global _OPENAI_DISABLED
-    if OPENAI_API_KEY and not _OPENAI_DISABLED:
+    global _LLM_DISABLED
+    if LLM_API_KEY and not _LLM_DISABLED:
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=OPENAI_API_KEY)
+            client = create_llm_client()
             resp = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=LLM_MODEL,
                 messages=[
                     {"role": "system", "content": "Tóm tắt đoạn văn sau trong 2-3 câu ngắn gọn bằng tiếng Việt."},
                     {"role": "user", "content": text},
@@ -66,7 +65,7 @@ def summarize_chunk(text: str) -> str:
             if content and content.strip():
                 return content.strip()
         except Exception as e:
-            _check_openai_error(e)
+            _check_llm_error(e)
 
     sentences = [s.strip() for s in text.replace("\n", " ").split(". ") if s.strip()]
     return ". ".join(sentences[:2]) + ("." if sentences and not sentences[0].endswith(".") else "") if sentences else text
@@ -80,13 +79,12 @@ def generate_hypothesis_questions(text: str, n_questions: int = 3) -> list[str]:
     Generate câu hỏi mà chunk có thể trả lời.
     Index cả questions lẫn chunk → query match tốt hơn (bridge vocabulary gap).
     """
-    global _OPENAI_DISABLED
-    if OPENAI_API_KEY and not _OPENAI_DISABLED:
+    global _LLM_DISABLED
+    if LLM_API_KEY and not _LLM_DISABLED:
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=OPENAI_API_KEY)
+            client = create_llm_client()
             resp = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=LLM_MODEL,
                 messages=[
                     {"role": "system", "content": f"Dựa trên đoạn văn, tạo {n_questions} câu hỏi mà đoạn văn có thể trả lời. Trả về mỗi câu hỏi trên 1 dòng."},
                     {"role": "user", "content": text},
@@ -98,7 +96,7 @@ def generate_hypothesis_questions(text: str, n_questions: int = 3) -> list[str]:
                 questions = content.strip().split("\n")
                 return [q.strip().lstrip("0123456789.-) ") for q in questions if q.strip()][:n_questions]
         except Exception as e:
-            _check_openai_error(e)
+            _check_llm_error(e)
 
     import re
     sentences = [s.strip() for s in re.split(r'[.!?\n]', text) if len(s.strip()) > 10]
@@ -113,13 +111,12 @@ def contextual_prepend(text: str, document_title: str = "") -> str:
     Prepend context giải thích chunk nằm ở đâu trong document.
     Anthropic benchmark: giảm 49% retrieval failure (alone).
     """
-    global _OPENAI_DISABLED
-    if OPENAI_API_KEY and not _OPENAI_DISABLED:
+    global _LLM_DISABLED
+    if LLM_API_KEY and not _LLM_DISABLED:
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=OPENAI_API_KEY)
+            client = create_llm_client()
             resp = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=LLM_MODEL,
                 messages=[
                     {"role": "system", "content": "Viết 1 câu ngắn mô tả đoạn văn này nằm ở đâu trong tài liệu và nói về chủ đề gì. Chỉ trả về 1 câu."},
                     {"role": "user", "content": f"Tài liệu: {document_title}\n\nĐoạn văn:\n{text}"},
@@ -131,7 +128,7 @@ def contextual_prepend(text: str, document_title: str = "") -> str:
                 context = content.strip()
                 return f"{context}\n\n{text}"
         except Exception as e:
-            _check_openai_error(e)
+            _check_llm_error(e)
 
     prefix = f"Trích từ {document_title}. " if document_title else "Nội dung tài liệu. "
     return f"{prefix}\n\n{text}"
@@ -144,14 +141,13 @@ def extract_metadata(text: str) -> dict:
     """
     LLM extract metadata tự động: topic, entities, date_range, category.
     """
-    global _OPENAI_DISABLED
-    if OPENAI_API_KEY and not _OPENAI_DISABLED:
+    global _LLM_DISABLED
+    if LLM_API_KEY and not _LLM_DISABLED:
         try:
             import json as _json
-            from openai import OpenAI
-            client = OpenAI(api_key=OPENAI_API_KEY)
+            client = create_llm_client()
             resp = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=LLM_MODEL,
                 messages=[
                     {"role": "system", "content": 'Trích xuất metadata từ đoạn văn. Trả về JSON: {"topic": "...", "entities": ["..."], "category": "policy|hr|it|finance", "language": "vi|en"}'},
                     {"role": "user", "content": text},
@@ -163,7 +159,7 @@ def extract_metadata(text: str) -> dict:
                 clean_json = content.strip().lstrip("```json").rstrip("```").strip()
                 return _json.loads(clean_json)
         except Exception as e:
-            _check_openai_error(e)
+            _check_llm_error(e)
 
     return {"topic": "general", "entities": [], "category": "policy", "language": "vi"}
 
@@ -176,14 +172,13 @@ def _enrich_single_call(text: str, source: str) -> dict:
 
     ⚠️ Cost optimization: 1 API call thay vì 4 calls riêng lẻ.
     """
-    global _OPENAI_DISABLED
-    if OPENAI_API_KEY and not _OPENAI_DISABLED:
+    global _LLM_DISABLED
+    if LLM_API_KEY and not _LLM_DISABLED:
         try:
             import json as _json
-            from openai import OpenAI
-            client = OpenAI(api_key=OPENAI_API_KEY)
+            client = create_llm_client()
             resp = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=LLM_MODEL,
                 messages=[
                     {"role": "system", "content": """Phân tích đoạn văn và trả về JSON:
 {
@@ -201,7 +196,7 @@ def _enrich_single_call(text: str, source: str) -> dict:
                 clean_json = content.strip().lstrip("```json").rstrip("```").strip()
                 return _json.loads(clean_json)
         except Exception as e:
-            _check_openai_error(e)
+            _check_llm_error(e)
 
     return {
         "summary": summarize_chunk(text),

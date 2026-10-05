@@ -68,14 +68,13 @@ def run_query(query: str, search: HybridSearch, reranker: CrossEncoderReranker) 
     reranked = reranker.rerank(query, docs, top_k=RERANK_TOP_K)
     contexts = [r.text for r in reranked] if reranked else [r.text for r in results[:3]]
 
-    from config import OPENAI_API_KEY
-    if OPENAI_API_KEY and contexts:
+    from config import LLM_API_KEY, LLM_MODEL, create_llm_client
+    if LLM_API_KEY and contexts:
         try:
-            from openai import OpenAI
-            client = OpenAI(api_key=OPENAI_API_KEY)
+            client = create_llm_client()
             context_str = "\n\n".join(contexts)
             resp = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=LLM_MODEL,
                 messages=[
                     {"role": "system", "content": "Trả lời CHỈ dựa trên context. Nếu không có → nói 'Không tìm thấy.'"},
                     {"role": "user", "content": f"Context:\n{context_str}\n\nCâu hỏi: {query}"},
